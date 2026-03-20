@@ -836,9 +836,8 @@ export abstract class MemoryManagerSyncOps {
         return;
       }
 
-      // Read the existing DB record to determine incremental sync eligibility.
-      // For session files (append-only transcripts) we track last_synced_line so
-      // only newly-appended messages are re-embedded on each sync.
+      // last_synced_line tracks how many content lines have been embedded so far;
+      // incremental syncs only embed lines beyond that offset.
       const existingRecord = this.db
         .prepare(`SELECT hash, last_synced_line FROM files WHERE path = ? AND source = ?`)
         .get(sessionPathForFile(absPath), "sessions") as
@@ -846,9 +845,8 @@ export abstract class MemoryManagerSyncOps {
         | undefined;
 
       const lastSyncedLine = existingRecord?.last_synced_line ?? 0;
-      // Incremental sync is only safe for normal session-delta appends.
-      // Targeted syncs (post-compaction, explicit sessionFiles) may replace the
-      // file entirely, so we must always do a full re-index in those cases.
+      // Targeted syncs (post-compaction) may replace the file entirely, so skip
+      // the incremental path and always do a full re-index in those cases.
       const isTargetedSync = params.targetSessionFiles && params.targetSessionFiles.length > 0;
       const tryIncremental = !params.needsFullReindex && !isTargetedSync && lastSyncedLine > 0;
 
@@ -856,16 +854,14 @@ export abstract class MemoryManagerSyncOps {
       let incrementalFromLine: number | undefined;
 
       if (tryIncremental) {
-        // Build the partial entry for only new content lines (beyond last_synced_line).
         const partial = await buildPartialSessionEntry(absPath, lastSyncedLine);
         if (partial) {
-          // New lines found — embed only the appended chunk.
+          // New lines found — embed only the appended content.
           entry = partial;
           incrementalFromLine = lastSyncedLine;
         } else {
-          // buildPartialSessionEntry returns null either when the file has no new
-          // content (pure no-op) or when total content shrank (compaction/truncate).
-          // Build the full entry to distinguish these two cases.
+          // null means either no new content or the file shrank (compaction).
+          // Build the full entry to tell these cases apart via hash comparison.
           entry = await buildSessionEntry(absPath);
           if (!entry) {
             if (params.progress) {
@@ -878,7 +874,7 @@ export abstract class MemoryManagerSyncOps {
             return;
           }
           if (!params.needsFullReindex && existingRecord?.hash === entry.hash) {
-            // Truly unchanged — nothing to do.
+            // Unchanged — nothing to do.
             if (params.progress) {
               params.progress.completed += 1;
               params.progress.report({
@@ -889,8 +885,7 @@ export abstract class MemoryManagerSyncOps {
             this.resetSessionDelta(absPath, entry.size);
             return;
           }
-          // Hash differs but no new lines — file was compacted/rewritten.
-          // Fall through to full re-index (incrementalFromLine stays undefined).
+          // Hash differs but no new lines — file was compacted/rewritten; full re-index.
         }
       } else {
         entry = await buildSessionEntry(absPath);
@@ -904,7 +899,7 @@ export abstract class MemoryManagerSyncOps {
           }
           return;
         }
-        // Full re-index path: skip files whose content hash is unchanged.
+        // Skip files whose content hash is unchanged.
         if (!params.needsFullReindex && existingRecord?.hash === entry.hash) {
           if (params.progress) {
             params.progress.completed += 1;
@@ -921,7 +916,6 @@ export abstract class MemoryManagerSyncOps {
       await this.indexFile(entry, {
         source: "sessions",
         content: entry.content,
-        // Pass the base line offset so indexFile appends rather than replaces.
         incrementalFromLine,
       });
       this.resetSessionDelta(absPath, entry.size);

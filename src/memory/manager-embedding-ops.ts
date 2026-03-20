@@ -894,7 +894,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     const sample = embeddings.find((embedding) => embedding.length > 0);
     const vectorReady = sample ? await this.ensureVectorReady(sample.length) : false;
     const now = Date.now();
-    // For incremental session syncs keep existing chunks; otherwise wipe and rewrite.
+    // Incremental appends keep existing chunks; all other paths wipe and rewrite.
     const isIncremental =
       options.source === "sessions" && typeof options.incrementalFromLine === "number";
     if (!isIncremental) {
@@ -954,8 +954,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           );
       }
     }
-    // Compute the new last_synced_line for session files so future syncs know
-    // how many content lines have already been embedded.
+    // Track how many content lines have been embedded so the next sync can skip them.
     const newLastSyncedLine =
       options.source === "sessions" && "lineMap" in entry
         ? (options.incrementalFromLine ?? 0) + entry.lineMap.length

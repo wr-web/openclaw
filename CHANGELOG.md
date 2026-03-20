@@ -48,6 +48,7 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Memory/session indexing: add incremental session sync so only newly-appended messages are re-embedded on each update rather than the entire transcript, reducing embedding API calls by ~78% for long conversations. Post-compaction targeted syncs and content-shrinkage events continue to trigger a full re-index. (#40919)
 - CLI/Ollama onboarding: keep the interactive model picker for explicit `openclaw onboard --auth-choice ollama` runs so setup still selects a default model without reintroducing pre-picker auto-pulls. (#49249) Thanks @BruceMacD.
 - Plugins/bundler TDZ: fix `RESERVED_COMMANDS` temporal dead zone error that prevented device-pair, phone-control, and talk-voice plugins from registering when the bundler placed the commands module after call sites in the same output chunk. Thanks @BunsDev.
 - Plugins/imports: fix stale googlechat runtime-api import paths and signal SDK circular re-exports broken by recent plugin-sdk refactors. Thanks @BunsDev.
