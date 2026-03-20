@@ -43,6 +43,7 @@ import {
 } from "./multimodal.js";
 import type { SessionFileEntry } from "./session-files.js";
 import {
+  buildPartialSessionEntry,
   buildSessionEntry,
   listSessionFilesForAgent,
   sessionPathForFile,
@@ -164,7 +165,12 @@ export abstract class MemoryManagerSyncOps {
   protected abstract pruneEmbeddingCacheIfNeeded(): void;
   protected abstract indexFile(
     entry: MemoryFileEntry | SessionFileEntry,
-    options: { source: MemorySource; content?: string },
+    options: {
+      source: MemorySource;
+      content?: string;
+      /** See `MemoryManagerEmbeddingOps.indexFile` for semantics. */
+      incrementalFromLine?: number;
+    },
   ): Promise<void>;
 
   protected async ensureVectorReady(dimensions?: number): Promise<boolean> {
@@ -834,32 +840,89 @@ export abstract class MemoryManagerSyncOps {
         }
         return;
       }
-      const entry = await buildSessionEntry(absPath);
-      if (!entry) {
-        if (params.progress) {
-          params.progress.completed += 1;
-          params.progress.report({
-            completed: params.progress.completed,
-            total: params.progress.total,
-          });
+
+      // last_synced_line tracks how many content lines have been embedded so far;
+      // incremental syncs only embed lines beyond that offset.
+      const existingRecord = this.db
+        .prepare(`SELECT hash, last_synced_line FROM files WHERE path = ? AND source = ?`)
+        .get(sessionPathForFile(absPath), "sessions") as
+        | { hash: string; last_synced_line: number | null }
+        | undefined;
+
+      const lastSyncedLine = existingRecord?.last_synced_line ?? 0;
+      // Targeted syncs (post-compaction) may replace the file entirely, so skip
+      // the incremental path and always do a full re-index in those cases.
+      const isTargetedSync = params.targetSessionFiles && params.targetSessionFiles.length > 0;
+      const tryIncremental = !params.needsFullReindex && !isTargetedSync && lastSyncedLine > 0;
+
+      let entry: SessionFileEntry | null;
+      let incrementalFromLine: number | undefined;
+
+      if (tryIncremental) {
+        const partial = await buildPartialSessionEntry(absPath, lastSyncedLine);
+        if (partial) {
+          // New lines found — embed only the appended content.
+          entry = partial;
+          incrementalFromLine = lastSyncedLine;
+        } else {
+          // null means either no new content or the file shrank (compaction).
+          // Build the full entry to tell these cases apart via hash comparison.
+          entry = await buildSessionEntry(absPath);
+          if (!entry) {
+            if (params.progress) {
+              params.progress.completed += 1;
+              params.progress.report({
+                completed: params.progress.completed,
+                total: params.progress.total,
+              });
+            }
+            return;
+          }
+          if (!params.needsFullReindex && existingRecord?.hash === entry.hash) {
+            // Unchanged — nothing to do.
+            if (params.progress) {
+              params.progress.completed += 1;
+              params.progress.report({
+                completed: params.progress.completed,
+                total: params.progress.total,
+              });
+            }
+            this.resetSessionDelta(absPath, entry.size);
+            return;
+          }
+          // Hash differs but no new lines — file was compacted/rewritten; full re-index.
         }
-        return;
-      }
-      const record = this.db
-        .prepare(`SELECT hash FROM files WHERE path = ? AND source = ?`)
-        .get(entry.path, "sessions") as { hash: string } | undefined;
-      if (!params.needsFullReindex && record?.hash === entry.hash) {
-        if (params.progress) {
-          params.progress.completed += 1;
-          params.progress.report({
-            completed: params.progress.completed,
-            total: params.progress.total,
-          });
+      } else {
+        entry = await buildSessionEntry(absPath);
+        if (!entry) {
+          if (params.progress) {
+            params.progress.completed += 1;
+            params.progress.report({
+              completed: params.progress.completed,
+              total: params.progress.total,
+            });
+          }
+          return;
         }
-        this.resetSessionDelta(absPath, entry.size);
-        return;
+        // Skip files whose content hash is unchanged.
+        if (!params.needsFullReindex && existingRecord?.hash === entry.hash) {
+          if (params.progress) {
+            params.progress.completed += 1;
+            params.progress.report({
+              completed: params.progress.completed,
+              total: params.progress.total,
+            });
+          }
+          this.resetSessionDelta(absPath, entry.size);
+          return;
+        }
       }
-      await this.indexFile(entry, { source: "sessions", content: entry.content });
+
+      await this.indexFile(entry, {
+        source: "sessions",
+        content: entry.content,
+        incrementalFromLine,
+      });
       this.resetSessionDelta(absPath, entry.size);
       if (params.progress) {
         params.progress.completed += 1;

@@ -628,6 +628,24 @@ Notes:
 - Session indexing is isolated per agent (only that agent's session logs are indexed).
 - Session logs live on disk (`~/.openclaw/agents/<agentId>/sessions/*.jsonl`). Any process/user with filesystem access can read them, so treat disk access as the trust boundary. For stricter isolation, run agents under separate OS users or hosts.
 
+### Incremental sync
+
+Session transcripts are append-only, so OpenClaw uses **incremental sync** to avoid
+re-embedding the entire file on every update. The SQLite index records how many
+content lines have already been embedded (`last_synced_line`); subsequent syncs
+only process newly-appended messages and insert their chunks alongside the existing
+ones — no existing chunks are removed or re-embedded.
+
+Incremental sync is bypassed in two cases where the file may have been replaced
+rather than appended to:
+
+- **Post-compaction targeted syncs** (`sessionFiles` parameter): the transcript
+  may be truncated and rewritten by the compaction process, so a full re-index is
+  always performed.
+- **Content shrinkage detected**: if a sync attempts the incremental path but finds
+  the file's total message count no longer exceeds `last_synced_line` (i.e. the
+  file shrank), OpenClaw falls back to a full re-index for that file.
+
 Delta thresholds (defaults shown):
 
 ```json5
