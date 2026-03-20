@@ -777,17 +777,35 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     this.db.prepare(`DELETE FROM chunks WHERE path = ? AND source = ?`).run(pathname, source);
   }
 
-  private upsertFileRecord(entry: MemoryFileEntry | SessionFileEntry, source: MemorySource): void {
-    this.db
-      .prepare(
-        `INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET
-           source=excluded.source,
-           hash=excluded.hash,
-           mtime=excluded.mtime,
-           size=excluded.size`,
-      )
-      .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size);
+  private upsertFileRecord(
+    entry: MemoryFileEntry | SessionFileEntry,
+    source: MemorySource,
+    lastSyncedLine?: number,
+  ): void {
+    if (typeof lastSyncedLine === "number") {
+      this.db
+        .prepare(
+          `INSERT INTO files (path, source, hash, mtime, size, last_synced_line) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(path) DO UPDATE SET
+             source=excluded.source,
+             hash=excluded.hash,
+             mtime=excluded.mtime,
+             size=excluded.size,
+             last_synced_line=excluded.last_synced_line`,
+        )
+        .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size, lastSyncedLine);
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(path) DO UPDATE SET
+             source=excluded.source,
+             hash=excluded.hash,
+             mtime=excluded.mtime,
+             size=excluded.size`,
+        )
+        .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size);
+    }
   }
 
   private deleteFileRecord(pathname: string, source: MemorySource): void {
@@ -802,7 +820,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
 
   protected async indexFile(
     entry: MemoryFileEntry | SessionFileEntry,
-    options: { source: MemorySource; content?: string },
+    options: {
+      source: MemorySource;
+      content?: string;
+      /**
+       * When set, this is an incremental session sync: `entry` contains only
+       * the newly-appended content lines starting at this 0-indexed offset.
+       * Existing chunks for the file are kept; only new chunks are appended.
+       * The files record will be updated with `last_synced_line` set to
+       * `incrementalFromLine + entry.lineMap.length`.
+       */
+      incrementalFromLine?: number;
+    },
   ) {
     // FTS-only mode: skip indexing if no provider
     if (!this.provider) {
@@ -865,7 +894,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     const sample = embeddings.find((embedding) => embedding.length > 0);
     const vectorReady = sample ? await this.ensureVectorReady(sample.length) : false;
     const now = Date.now();
-    this.clearIndexedFileData(entry.path, options.source);
+    // For incremental session syncs keep existing chunks; otherwise wipe and rewrite.
+    const isIncremental =
+      options.source === "sessions" && typeof options.incrementalFromLine === "number";
+    if (!isIncremental) {
+      this.clearIndexedFileData(entry.path, options.source);
+    }
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedding = embeddings[i] ?? [];
@@ -920,6 +954,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           );
       }
     }
-    this.upsertFileRecord(entry, options.source);
+    // Compute the new last_synced_line for session files so future syncs know
+    // how many content lines have already been embedded.
+    const newLastSyncedLine =
+      options.source === "sessions" && "lineMap" in entry
+        ? (options.incrementalFromLine ?? 0) + entry.lineMap.length
+        : undefined;
+    this.upsertFileRecord(entry, options.source, newLastSyncedLine);
   }
 }

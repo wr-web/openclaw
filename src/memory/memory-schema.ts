@@ -76,6 +76,9 @@ export function ensureMemoryIndexSchema(params: {
 
   ensureColumn(params.db, "files", "source", "TEXT NOT NULL DEFAULT 'memory'");
   ensureColumn(params.db, "chunks", "source", "TEXT NOT NULL DEFAULT 'memory'");
+  // last_synced_line tracks how many content lines have been embedded for a session file,
+  // enabling incremental sync that avoids re-embedding already-indexed content.
+  ensureColumn(params.db, "files", "last_synced_line", "INTEGER");
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);`);
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);`);
 
