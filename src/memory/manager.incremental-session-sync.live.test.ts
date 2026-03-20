@@ -155,13 +155,15 @@ describe("incremental session sync — live Ollama (nomic-embed-text)", () => {
     const statusAfterInitial = manager.status();
     const chunksAfterInitial = statusAfterInitial.chunks;
 
-    console.log(
-      `[live] Initial sync: ${chunksAfterInitial} chunks, ${(t1 - t0).toFixed(0)} ms`,
-    );
+    console.log(`[live] Initial sync: ${chunksAfterInitial} chunks, ${(t1 - t0).toFixed(0)} ms`);
     expect(chunksAfterInitial).toBeGreaterThan(0);
 
     // Verify last_synced_line was written
-    const db = (manager as unknown as { db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } } }).db;
+    const db = (
+      manager as unknown as {
+        db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } };
+      }
+    ).db;
     const record = db
       .prepare(`SELECT last_synced_line FROM files WHERE path = ? AND source = ?`)
       .get("sessions/live-convo.jsonl", "sessions") as { last_synced_line: number } | undefined;
@@ -197,7 +199,9 @@ describe("incremental session sync — live Ollama (nomic-embed-text)", () => {
     console.log(
       `[live] Incremental sync: ${chunksAfterIncremental} chunks total (+${chunksAfterIncremental - chunksAfterInitial} new), ${(t3 - t2).toFixed(0)} ms`,
     );
-    console.log(`[live] last_synced_line: ${record?.last_synced_line} → ${recordAfter?.last_synced_line}`);
+    console.log(
+      `[live] last_synced_line: ${record?.last_synced_line} → ${recordAfter?.last_synced_line}`,
+    );
 
     // Incremental sync should have added new chunks without touching old ones
     expect(chunksAfterIncremental).toBeGreaterThan(chunksAfterInitial);
@@ -249,7 +253,11 @@ describe("incremental session sync — live Ollama (nomic-embed-text)", () => {
     const manager = result.manager!;
     await manager.sync({ reason: "live-initial" });
 
-    const db = (manager as unknown as { db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } } }).db;
+    const db = (
+      manager as unknown as {
+        db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } };
+      }
+    ).db;
 
     // Simulate compaction: replace the file with a shorter transcript
     await fs.writeFile(sessionFile, buildTranscript(5));

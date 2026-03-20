@@ -165,7 +165,12 @@ export abstract class MemoryManagerSyncOps {
   protected abstract pruneEmbeddingCacheIfNeeded(): void;
   protected abstract indexFile(
     entry: MemoryFileEntry | SessionFileEntry,
-    options: { source: MemorySource; content?: string },
+    options: {
+      source: MemorySource;
+      content?: string;
+      /** See `MemoryManagerEmbeddingOps.indexFile` for semantics. */
+      incrementalFromLine?: number;
+    },
   ): Promise<void>;
 
   protected async ensureVectorReady(dimensions?: number): Promise<boolean> {
