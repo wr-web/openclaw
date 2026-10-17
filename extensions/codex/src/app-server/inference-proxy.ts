@@ -22,6 +22,7 @@ import {
   createCodexInferenceDispatch,
   isTerminalResponse,
   readProxyBody,
+  respondToRefusedUpload,
   type CodexInferenceModelExecution,
   type CodexInferenceModelRequest,
 } from "./inference-dispatch.js";
@@ -330,7 +331,7 @@ export async function createCodexInferenceProxy(params: {
           if (denied) {
             res.writeHead(403, { "content-type": "application/json" }).end(denied);
           } else if (tooLarge) {
-            res.writeHead(400, { "content-type": "application/json" }).end(tooLarge);
+            respondToRefusedUpload(req, res, tooLarge);
           } else {
             res.writeHead(502, { "content-type": "text/plain" }).end(FAILURE);
           }

@@ -1,5 +1,5 @@
 import { isUtf8 } from "node:buffer";
-import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import { zstdCompress, zstdDecompress } from "node:zlib";
 import type { CodexAppServerClient } from "./client.js";
@@ -368,7 +368,7 @@ export function createCodexInferenceDispatch(params: {
     release: () => void,
     retryable = false,
   ) => {
-    const wire = await readProxyBody(
+    const wire = await readProxyRequestBody(
       req,
       MAX_BODY_BYTES,
       () => new CodexInferenceRequestTooLargeError(),
@@ -431,6 +431,88 @@ export async function readProxyBody(
     chunks.push(bytes);
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * Reads a client request body without destroying the request on refusal.
+ * Leaving the async iterator destroys the unfinished request and its socket,
+ * so an upload still streaming past the limit would see a reset instead of the
+ * terminal size response; discard the remainder and let the response close it.
+ */
+export function readProxyRequestBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  oversized: () => Error,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("close", onClose);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += bytes.length;
+      if (size > maxBytes) {
+        cleanup();
+        chunks.length = 0;
+        req.resume();
+        reject(oversized());
+        return;
+      }
+      chunks.push(bytes);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error(FAILURE));
+    };
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+    req.once("close", onClose);
+  });
+}
+
+const REFUSED_UPLOAD_DRAIN_MS = 1_000;
+
+/**
+ * Sends the terminal size refusal for an upload that may still be streaming.
+ * Closing with its bytes unread resets the socket before the client reads the
+ * refusal, so keep discarding the remainder and close once it ends or the
+ * bounded drain lapses.
+ */
+export function respondToRefusedUpload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): void {
+  res.removeHeader("Connection");
+  res.shouldKeepAlive = true;
+  res.writeHead(400, { "content-type": "application/json" }).end(body);
+  const socket = req.socket;
+  const timer = setTimeout(() => socket.destroy(), REFUSED_UPLOAD_DRAIN_MS);
+  timer.unref();
+  const finish = () => {
+    clearTimeout(timer);
+    socket.end();
+  };
+  if (req.complete) {
+    finish();
+    return;
+  }
+  req.once("end", finish);
+  socket.once("close", () => clearTimeout(timer));
 }
 
 export function isTerminalResponse(bytes: Buffer): boolean {

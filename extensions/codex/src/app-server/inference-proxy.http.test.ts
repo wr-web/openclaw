@@ -104,7 +104,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function post(body = Buffer.from(JSON.stringify(child)), headers: Record<string, string> = {}) {
+function post(
+  body = Buffer.from(JSON.stringify(child)),
+  headers: Record<string, string> = {},
+  options: { leaveOpen?: boolean } = {},
+) {
   const response = createDeferred<IncomingMessage>();
   const closed = createDeferred<void>();
   const req = request(
@@ -120,7 +124,24 @@ function post(body = Buffer.from(JSON.stringify(child)), headers: Record<string,
   req.once("socket", (socket) => {
     socket.once("close", () => closed.resolve());
   });
-  req.end(body);
+  if (options.leaveOpen) {
+    req.write(body);
+    // Keep the upload streaming past the refusal; it never sends its final chunk.
+    const more = setInterval(() => {
+      if (req.destroyed || req.writableEnded) {
+        clearInterval(more);
+        return;
+      }
+      req.write(Buffer.alloc(64 * 1024, 32));
+    }, 5);
+    req.once("close", () => clearInterval(more));
+    void response.promise.then(
+      () => clearInterval(more),
+      () => clearInterval(more),
+    );
+  } else {
+    req.end(body);
+  }
   return { req, response: response.promise, closed: closed.promise };
 }
 
@@ -438,18 +459,21 @@ describe("inference HTTP transport ownership", () => {
       "decodes",
       () => zstdCompressSync(Buffer.alloc(MAX_BODY_BYTES + 1, 32)),
       { "content-encoding": "zstd" },
+      {},
     ],
     // An uncompressed upload overflows mid-stream; the refusal must arrive instead of a reset.
-    ["uploads", () => Buffer.alloc(MAX_BODY_BYTES + 1, 32), {}],
+    ["uploads", () => Buffer.alloc(MAX_BODY_BYTES + 1, 32), {}, {}],
+    // A chunked upload still open past the limit must get the refusal, not a socket reset.
+    ["streams unfinished", () => Buffer.alloc(MAX_BODY_BYTES + 1, 32), {}, { leaveOpen: true }],
   ] as const)(
     "rejects a request that %s past the body limit as a terminal size error",
-    async (_kind, body, headers) => {
+    async (_kind, body, headers, options) => {
       let forwarded = false;
       handle = (_req, res) => {
         forwarded = true;
         res.end("synthetic completion");
       };
-      const upload = post(body(), headers);
+      const upload = post(body(), headers, options);
       const response = await upload.response;
       // Native Codex retries 5xx and unmapped statuses; a 400 surfaces as a terminal invalid request.
       expect(response.statusCode).toBe(400);
