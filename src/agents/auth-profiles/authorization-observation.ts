@@ -29,13 +29,15 @@ function projectAuthProfileAuthorization(
   if (
     credential.type === "oauth" &&
     typeof credential.access === "string" &&
-    typeof credential.refresh === "string" &&
+    (credential.refresh === undefined || typeof credential.refresh === "string") &&
     typeof credential.expires === "number"
   ) {
+    // Access-only credentials (refresh held by an external owner) stay usable until they expire.
+    const refresh = credential.refresh ?? "";
     const marker = {
       type: "oauth",
       access: credential.access,
-      refresh: credential.refresh,
+      refresh,
       expires: credential.expires,
     } satisfies Parameters<typeof isOAuthRefreshFence>[0];
     const status = isPendingOAuthRefreshFence(marker)
@@ -43,7 +45,7 @@ function projectAuthProfileAuthorization(
       : isOAuthRefreshFence(marker)
         ? "retired"
         : "ready";
-    return { incarnation, status, ...(!credential.refresh ? { expires: credential.expires } : {}) };
+    return { incarnation, status, ...(!refresh ? { expires: credential.expires } : {}) };
   }
   if (credential.type === "api_key" && (credential.key || credential.keyRef)) {
     return { incarnation, status: "ready" };

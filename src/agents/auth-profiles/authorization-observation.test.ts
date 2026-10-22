@@ -143,3 +143,35 @@ it("retains enrollment tombstones through canonical removal and ignores replayed
   writeStore(raw, root.agentDir);
   expect(lifetime()).toBe(restored);
 });
+
+it.each([
+  ["an unexpired", 60_000, true],
+  ["an expired", -60_000, false],
+] as const)(
+  "authorizes %s access-only OAuth credential only until it expires",
+  async (_name, expiresInMs, usable) => {
+    // External owners may keep refresh authority and store only the access token here.
+    const accessOnly = {
+      type: "oauth",
+      provider: "openai",
+      access: "access-only-token",
+      expires: Date.now() + expiresInMs,
+    };
+    writeStore({ version: 1, profiles: { local: accessOnly } }, root.agentDir);
+    const capture = captureMcpAuthProfileAuthorization({
+      profileId: "local",
+      agentDir: root.agentDir,
+      assertCurrent() {},
+    });
+    if (!usable) {
+      await expect(capture).rejects.toThrow("MCP authorization was disconnected or replaced");
+      return;
+    }
+    const authority = await capture;
+    try {
+      expect(authority.assertCurrent).not.toThrow();
+    } finally {
+      authority.dispose();
+    }
+  },
+);
