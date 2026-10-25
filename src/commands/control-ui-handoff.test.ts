@@ -186,6 +186,42 @@ it.each(["ready", "timeout", "immediate"])("handles preparing dashboards: %s", a
   expect(ready.release).toHaveBeenCalledTimes(outcome === "ready" ? 1 : 0);
 });
 
+it("waits through a slow document request on a real listener", async () => {
+  // First HEAD outlives the 2s request window; the retry answers immediately.
+  let requests = 0;
+  const server = createHttpServer((_req, res) => {
+    requests += 1;
+    const respond = () => res.writeHead(200, { "content-type": "text/html" }).end();
+    if (requests === 1) {
+      setTimeout(respond, 2_500);
+    } else {
+      respond();
+    }
+  });
+  await withLoopbackTestServer(server, async (port) => {
+    const onPending = vi.fn();
+    await expect(
+      waitForControlUiDocument({ url: `http://127.0.0.1:${port}/`, onPending, timeoutMs: 10_000 }),
+    ).resolves.toEqual({ ready: true });
+    expect(requests).toBe(2);
+    expect(onPending).toHaveBeenCalledOnce();
+  });
+});
+
+it.each([
+  ["timeouts when pending waits are disabled", "TimeoutError", false, 1],
+  ["a listener that never answers", "TimeoutError", undefined, 5],
+  ["other transport failures", "Error", undefined, 1],
+] as const)("keeps %s terminal", async (_label, name, waitForPending, attempts) => {
+  const error = Object.assign(new Error("request failed"), { name });
+  const fetch = mockFetch().mockRejectedValue(error);
+  await expect(probe({ waitForPending })).resolves.toEqual({
+    ready: false,
+    reason: "Control UI dashboard is unavailable: request failed",
+  });
+  expect(fetch).toHaveBeenCalledTimes(attempts);
+});
+
 it.each(["fails", "becomes HTML"])("keeps HTTP failure: diagnostic %s", async (outcome) => {
   const head = guardedResponse(503, {});
   const fetch = mockFetch().mockResolvedValueOnce(head);
