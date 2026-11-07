@@ -75,10 +75,9 @@ function collectFailureReportIssues(
   for (const issue of [...target.issues, ...(recoveryTarget?.issues ?? [])]) {
     issues.set(JSON.stringify([issue.code, issue.message, issue.sessionKey]), issue);
   }
-  const replacements = failureReportPathReplacements(target);
   const sanitize = (issue: DoctorSessionSqliteIssue): DoctorSessionSqliteIssue => ({
     code: issue.code,
-    message: sanitizeFailureIssueMessage(issue, replacements),
+    message: sanitizeFailureIssueMessage(issue),
     sessionKey: issue.sessionKey ? redactSessionKey(issue.sessionKey) : undefined,
   });
   return {
@@ -115,15 +114,14 @@ export function createSessionSqliteMigrationFailureIssue(
         manifestPath,
         manifest,
         "session SQLite migration failed",
-        targets.map((target) => {
-          const replacements = failureReportPathReplacements(target);
-          return createFailureReportTarget(target, {
+        targets.map((target) =>
+          createFailureReportTarget(target, {
             issues: target.issues.map((issue) => ({
               code: issue.code,
-              message: sanitizeFailureIssueMessage(issue, replacements),
+              message: sanitizeFailureIssueMessage(issue),
             })),
-          });
-        }),
+          }),
+        ),
       ),
     );
   const body = [
@@ -317,39 +315,13 @@ function shortenFailureReportPath(filePath: string): string {
 }
 
 /**
- * Resolves a target's path rewrites once. A target can carry one move per legacy file
- * (tens of thousands), so rewriting every path inside every issue message was
- * quadratic and could hold doctor recovery for hours (#194621). A plain home-prefix
- * rewrite equals what redactAbsoluteHomePaths applies to every message anyway, so only
- * rewrites that also normalize the path need a per-message pass.
+ * Manifest paths are path.resolve()d by the schema, so shortening any of them is the
+ * same home-prefix rewrite redactAbsoluteHomePaths applies to the whole message.
+ * Rewriting every move path inside every issue was quadratic: a target carries one
+ * move per legacy file, and recovery could spend hours here (#194621).
  */
-function failureReportPathReplacements(
-  target: SessionSqliteMigrationTargetManifest,
-): ReadonlyArray<readonly [string, string]> {
-  const home = process.env.HOME;
-  const replacements = new Map<string, string>();
-  for (const filePath of [
-    target.storePath,
-    target.sqlitePath,
-    ...target.plannedMoves.flatMap((move) => [move.sourcePath, move.archivePath]),
-    ...target.completedMoves.flatMap((move) => [move.sourcePath, move.archivePath]),
-  ]) {
-    const shortened = shortenFailureReportPath(filePath);
-    if (shortened !== filePath && (!home || shortened !== `~${filePath.slice(home.length)}`)) {
-      replacements.set(filePath, shortened);
-    }
-  }
-  return [...replacements];
-}
-
-function sanitizeFailureIssueMessage(
-  issue: DoctorSessionSqliteIssue,
-  replacements: ReadonlyArray<readonly [string, string]>,
-): string {
+function sanitizeFailureIssueMessage(issue: DoctorSessionSqliteIssue): string {
   let message = issue.message;
-  for (const [filePath, shortened] of replacements) {
-    message = message.split(filePath).join(shortened);
-  }
   if (issue.sessionKey) {
     message = message.split(issue.sessionKey).join(redactSessionKey(issue.sessionKey));
   }
