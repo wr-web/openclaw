@@ -226,6 +226,25 @@ const test = it.extend<{ usage: ReturnType<typeof makeRefreshFixture> }>({
   usage: async ({ task: _task }, use) => withRefreshFixture(use),
 });
 
+it("bounds concurrent background passes across agent databases (#195270)", async () => {
+  await withRefreshFixture(async ({ request, refresh, hold }) => {
+    const passes = Array.from({ length: 6 }, () => hold("refreshed" as const));
+    refresh.mockImplementation(async () => await passes[refresh.mock.calls.length - 1]!.promise);
+    for (let index = 0; index < passes.length; index += 1) {
+      request({ agentId: `fleet-${index}` });
+    }
+    const settle = async (calls: number) => {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(calls), { timeout: 10_000 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(refresh).toHaveBeenCalledTimes(calls);
+    };
+    await settle(4);
+    passes[0]!.resolve("refreshed");
+    await settle(5);
+  });
+});
+
 it("returns marked stale session costs when another direct refresh stays busy", async () => {
   const actual = await vi.importActual<typeof import("./session-cost-usage-aggregation.js")>(
     "./session-cost-usage-aggregation.js",

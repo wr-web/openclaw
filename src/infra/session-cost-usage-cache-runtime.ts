@@ -22,6 +22,10 @@ import {
 } from "./session-cost-usage-overview-load.js";
 import { resolveUsageCostPricingFingerprint } from "./session-cost-usage-pricing-context.js";
 import {
+  acquireUsageCostRefreshPass,
+  waitForUsageCostRefresh,
+} from "./session-cost-usage-refresh-pacing.js";
+import {
   prepareUsageCostWorker,
   resolveUsageCostWorkerDayBucket,
   runUsageCostWorker,
@@ -548,33 +552,6 @@ function usageCostRefreshDelay(state: UsageCostRefreshState, now: number, file?:
   return Math.max(0, delay);
 }
 
-function waitForUsageCostRefresh(
-  signal: AbortSignal | undefined,
-  delayMs: number,
-  state?: UsageCostRefreshState,
-): Promise<void> {
-  return new Promise((resolve) => {
-    // Zero must remain a real timer so cache reads return before refresh starts.
-    const timer = Number.isFinite(delayMs) ? setTimeout(finish, delayMs) : undefined;
-    timer?.unref?.();
-    function finish() {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", finish);
-      if (state) {
-        state.resume = undefined;
-      }
-      resolve();
-    }
-    if (state) {
-      state.resume = finish;
-    }
-    signal?.addEventListener("abort", finish, { once: true });
-    if (signal?.aborted) {
-      finish();
-    }
-  });
-}
-
 async function runQueuedUsageCostRefresh(
   state: UsageCostRefreshState,
   refreshes: Map<string, UsageCostRefreshState>,
@@ -603,8 +580,12 @@ async function runQueuedUsageCostRefresh(
       if (monotonicNow() < retryAt || usageCostRefreshDelay(state, monotonicNow()) > 0) {
         continue;
       }
+      const releasePass = await acquireUsageCostRefreshPass(state, signal);
       let partialBatch = false;
       try {
+        if (signal?.aborted) {
+          return;
+        }
         // Publications queued before deletion leave discovery before acquiring storage.
         if (
           (await readAgentDeletionJournalStatusInWorker(
@@ -722,6 +703,8 @@ async function runQueuedUsageCostRefresh(
         for (const file of state.readingSessionFiles.keys()) {
           state.pendingSessionFiles.set(file, null);
         }
+      } finally {
+        releasePass();
       }
     } while (state.fullRefreshRequested || state.pendingSessionFiles.size > 0);
   } finally {
