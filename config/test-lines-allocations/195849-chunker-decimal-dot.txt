@@ -1,0 +1,2 @@
+14
+# #195849: streamed decimal/version dots must not become block breaks; character-by-character chunker regression.

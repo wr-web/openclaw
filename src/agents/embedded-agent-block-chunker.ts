@@ -631,7 +631,9 @@ export class EmbeddedBlockChunker {
       offset,
       openFence,
     );
-    if (preferred.index !== -1) {
+    // A streamed tail dot can be a decimal or version separator: break only before known whitespace.
+    const next = buffer.charAt(preferred.index);
+    if (preferred.index !== -1 && (next ? /\s/.test(next) : force)) {
       return preferred;
     }
 

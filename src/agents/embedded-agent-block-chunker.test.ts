@@ -79,6 +79,20 @@ function streamChunks(chunker: EmbeddedBlockChunker, source: string, delta: numb
 }
 
 describe("EmbeddedBlockChunker", () => {
+  it("does not break a streamed decimal or version at its dot (#195849)", () => {
+    const source = "| 内存 | 11.65 GiB |\n| ver | v2026.11.2 |\nDone. Next line.";
+    const chunker = paragraphChunker(1, 1200);
+    const chunks: string[] = [];
+    for (const char of source) {
+      chunker.append(char);
+      chunks.push(...drainChunks(chunker));
+    }
+    chunks.push(...drainChunks(chunker, true));
+    expect(chunks.filter((chunk) => /\d\.$/.test(chunk.trimEnd()))).toEqual([]);
+    expect(chunks.join("\n")).toContain("11.65 GiB");
+    expect(chunks.join("\n")).toContain("v2026.11.2");
+  });
+
   it("emits a whole leading grapheme that exactly fills the hard cap", () => {
     const cluster = `e${"\u0301".repeat(1199)}`;
     const chunker = paragraphChunker(800, 1200);
