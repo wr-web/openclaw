@@ -1,0 +1,16 @@
+{
+  "fixedLight": {
+    "themeMode": "light",
+    "className": "btn approval-page__action approval-page__action--allow-once primary",
+    "color": "rgb(255, 255, 255)",
+    "backgroundColor": "rgb(189, 69, 49)",
+    "contrastRatio": 5.1732262958092825
+  },
+  "preFixCascadeLight": {
+    "themeMode": "light",
+    "className": "btn approval-page__action approval-page__action--allow-once",
+    "color": "rgb(255, 255, 255)",
+    "backgroundColor": "color(srgb 0.957255 0.957255 0.957255)",
+    "contrastRatio": null
+  }
+}
